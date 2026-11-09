@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import express from 'express';
+import request from 'supertest';
 import test from 'node:test';
-import { createGameWebhookHandler } from '../src/game-webhook.js';
+import { createGameWebhookHandler, createGameWebhookRouter } from '../src/game-webhook.js';
 
 const secret = 'test-secret';
 const rawBody = Buffer.from('{"sessionId":"session-1","state":"active"}');
@@ -53,4 +55,33 @@ test('rejects malformed JSON without updating session state', async () => {
     { statusCode: 400 },
   );
   assert.equal(updateCount, 0);
+});
+
+test('HTTP route verifies the raw body before updating session state', async () => {
+  let updatedPayload;
+  const app = express();
+  app.use('/webhooks/game', createGameWebhookRouter({
+    secret,
+    updateSessionState: (payload) => {
+      updatedPayload = payload;
+    },
+  }));
+
+  const accepted = await request(app)
+    .post('/webhooks/game')
+    .set('content-type', 'application/json')
+    .set('x-game-signature', signature)
+    .send(rawBody.toString('utf8'));
+
+  assert.equal(accepted.status, 204);
+  assert.deepEqual(updatedPayload, { sessionId: 'session-1', state: 'active' });
+
+  const rejected = await request(app)
+    .post('/webhooks/game')
+    .set('content-type', 'application/json')
+    .set('x-game-signature', 'sha256=invalid')
+    .send(rawBody.toString('utf8'));
+
+  assert.equal(rejected.status, 401);
+  assert.deepEqual(updatedPayload, { sessionId: 'session-1', state: 'active' });
 });
